@@ -3,7 +3,13 @@ import time
 import unittest
 from pathlib import Path
 
-from server import Index, mark_message, resolve_archive_file, rewrite_local_attachments
+from server import (
+    Index,
+    defer_visual_media,
+    mark_message,
+    resolve_archive_file,
+    rewrite_local_attachments,
+)
 
 
 SAMPLE_CHAT = """<!doctype html>
@@ -59,6 +65,23 @@ class IndexTests(unittest.TestCase):
             outside.write_bytes(b"private")
 
             self.assertIsNone(resolve_archive_file(archive, "../private.pdf"))
+
+    def test_images_and_videos_are_deferred_but_downloads_are_not(self):
+        source = (
+            '<img src="/archive-file?path=photo.jpg" srcset="small.jpg 1x, large.jpg 2x">'
+            '<video controls poster="poster.jpg"><source src="/archive-file?path=movie.mov"></video>'
+            '<a href="/archive-file?path=document.pdf">Download PDF</a>'
+        )
+
+        deferred = defer_visual_media(source)
+
+        self.assertIn('data-chat-view-src="/archive-file?path=photo.jpg"', deferred)
+        self.assertIn('data-chat-view-srcset="small.jpg 1x, large.jpg 2x"', deferred)
+        self.assertIn('data-chat-view-poster="poster.jpg"', deferred)
+        self.assertIn('<source data-chat-view-src="/archive-file?path=movie.mov">', deferred)
+        self.assertIn('href="/archive-file?path=document.pdf"', deferred)
+        self.assertNotIn('<img src=', deferred)
+        self.assertNotIn('<source src=', deferred)
 
 
 if __name__ == "__main__":

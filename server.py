@@ -279,6 +279,24 @@ def rewrite_local_attachments(source: str, archive_dir: Path) -> str:
     return attr_re.sub(replace, source)
 
 
+def defer_visual_media(source: str) -> str:
+    """Prevent images and videos from fetching until their placeholder is clicked."""
+    media_tag_re = re.compile(r"<(?:img|video|source)\b[^>]*>", re.I)
+
+    def defer_tag(match):
+        tag = match.group(0)
+        tag_name = re.match(r"<(?P<name>\w+)", tag).group("name").lower()
+        attributes = "src|srcset" if tag_name in ("img", "source") else "src|poster"
+        return re.sub(
+            rf"(?P<space>\s)(?P<attribute>{attributes})\s*=",
+            r"\g<space>data-chat-view-\g<attribute>=",
+            tag,
+            flags=re.I,
+        )
+
+    return media_tag_re.sub(defer_tag, source)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def handle(self):
         try:
@@ -431,22 +449,45 @@ class Handler(SimpleHTTPRequestHandler):
         except OSError:
             return self.send_error(404)
         source = rewrite_local_attachments(source, archive_dir)
+        source = defer_visual_media(source)
         selected = params.get("message", [""])[0]
         title = html.escape(candidate.stem)
         injected_css = """
 <style id="chat-view-style">
 html{height:100%;scroll-behavior:smooth;overflow-y:auto!important}body{min-height:100%;max-width:820px;margin:0 auto;padding:88px 20px 40px!important;background:#fff!important;overflow:visible!important}
 .message{margin:7px 0!important}.message .sent,.message .received{padding:9px 14px!important;max-width:72%!important;border-radius:20px!important}
-.timestamp{font-size:11px!important;opacity:.62}.sender{font-size:12px!important;font-weight:600}.message .sent:has(.attachment),.message .received:has(.attachment){max-width:88%!important}.attachment img,.attachment video{display:block;width:auto;max-width:100%;max-height:72vh;border-radius:14px;object-fit:contain;cursor:zoom-in}
+.timestamp{font-size:11px!important;opacity:.62}.sender{font-size:12px!important;font-weight:600}.message .sent:has(.attachment),.message .received:has(.attachment){max-width:88%!important}.attachment img,.attachment video{display:block;width:auto;max-width:100%;max-height:72vh;border-radius:14px;object-fit:contain}img[data-chat-view-src],img[data-chat-view-srcset],video:has([data-chat-view-src]),video[data-chat-view-src]{display:none}.media-placeholder{width:min(560px,72vw);height:clamp(190px,34vw,340px);border:1px solid rgba(128,128,128,.32);border-radius:16px;background:rgba(128,128,128,.12);color:inherit;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;font:600 14px system-ui;cursor:pointer}.media-placeholder:hover{background:rgba(128,128,128,.2)}.media-placeholder:disabled{cursor:wait;opacity:.72}.media-placeholder-icon{font-size:34px}img.media-loaded{cursor:zoom-in}
 .search-hit>div{outline:4px solid rgba(255,196,0,.55);outline-offset:3px}
 #archive-title{position:fixed;z-index:20;top:0;left:0;right:0;height:64px;background:rgba(248,248,248,.88);backdrop-filter:blur(18px);border-bottom:1px solid #ddd;display:flex;align-items:center;justify-content:center;font:600 15px system-ui;color:#111}
 @media(prefers-color-scheme:dark){body{background:#000!important}#archive-title{background:rgba(28,28,30,.88);border-color:#333;color:#fff}}
 </style><div id="archive-title">__CHAT_TITLE__</div>
 <script>
-addEventListener('DOMContentLoaded',()=>document.querySelectorAll('.attachment img').forEach(img=>{
-  img.loading='lazy';img.decoding='async';
-  if(!img.closest('a')){const a=document.createElement('a');a.href=img.src;a.target='_blank';a.rel='noopener';a.title='Open full-size attachment';img.replaceWith(a);a.appendChild(img)}
-}))
+addEventListener('DOMContentLoaded',()=>{
+  const makePlaceholder=(media,label,icon,load)=>{
+    const button=document.createElement('button');button.type='button';button.className='media-placeholder';
+    button.innerHTML='<span class="media-placeholder-icon">'+icon+'</span><span>'+label+'</span>';
+    button.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();button.disabled=true;button.lastElementChild.textContent='Loading…';load(button)});
+    media.before(button);
+  };
+  document.querySelectorAll('img[data-chat-view-src],img[data-chat-view-srcset]').forEach(img=>{
+    const url=img.dataset.chatViewSrc;const srcset=img.dataset.chatViewSrcset;img.decoding='async';
+    makePlaceholder(img,'Load image','▧',button=>{
+      img.addEventListener('load',()=>{button.remove();img.classList.add('media-loaded');if(!img.closest('a')){const a=document.createElement('a');a.href=url||img.currentSrc;a.target='_blank';a.rel='noopener';a.title='Open full-size attachment';img.replaceWith(a);a.appendChild(img)}},{once:true});
+      img.addEventListener('error',()=>{button.disabled=false;button.lastElementChild.textContent='Image failed — retry';img.removeAttribute('src');img.removeAttribute('srcset')},{once:true});
+      if(srcset){img.srcset=srcset;img.removeAttribute('data-chat-view-srcset')}if(url){img.src=url;img.removeAttribute('data-chat-view-src')}
+    });
+  });
+  document.querySelectorAll('video').forEach(video=>{
+    const direct=video.dataset.chatViewSrc;const sources=[...video.querySelectorAll('source[data-chat-view-src]')];
+    if(!direct&&!sources.length)return;
+    makePlaceholder(video,'Load video','▷',button=>{
+      if(video.dataset.chatViewPoster){video.poster=video.dataset.chatViewPoster;video.removeAttribute('data-chat-view-poster')}
+      if(direct){video.src=direct;video.removeAttribute('data-chat-view-src')}
+      sources.forEach(source=>{source.src=source.dataset.chatViewSrc;source.removeAttribute('data-chat-view-src')});
+      video.style.display='block';video.load();button.remove();
+    });
+  });
+});
 </script>
 """.replace("__CHAT_TITLE__", title)
         source = re.sub(r"<body([^>]*)>", lambda m: m.group(0) + injected_css, source, count=1, flags=re.I)

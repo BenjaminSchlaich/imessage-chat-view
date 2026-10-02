@@ -53,6 +53,8 @@ to the macOS CPU architecture on which they are created.
 - The selected archive remains read-only.
 - Attachments copied into an archive with the `clone`, `basic`, or `full`
   method are displayed and downloadable from inside the selected archive.
+- Images and videos are represented by large placeholders and are loaded only
+  when clicked, reducing startup work for media-heavy conversations.
 - Linked web previews may contact their original websites when displayed.
 - Attachments exported as absolute paths require the original files to remain
   under `~/Library/Messages/Attachments`.
