@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Messages Archive</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main class="shell">
+    <aside class="sidebar">
+      <header><h1>Messages</h1><button id="theme" aria-label="Toggle appearance">◐</button></header>
+      <label class="search"><span>⌕</span><input id="search" type="search" placeholder="Search" autocomplete="off"><kbd>⌘K</kbd></label>
+      <div id="status" class="status">Indexing your archive…</div>
+      <div id="list" class="list" role="listbox"></div>
+    </aside>
+    <section class="viewer">
+      <div id="empty" class="empty"><div class="bubble-icon">•••</div><h2>Your message archive</h2><p>Select a conversation or search across all messages.</p></div>
+      <iframe id="frame" title="Conversation" hidden></iframe>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
