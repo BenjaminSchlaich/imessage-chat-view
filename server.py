@@ -241,13 +241,39 @@ def choose_archive_folder() -> Path | None:
     return Path(result.stdout.strip()).expanduser().resolve()
 
 
-def rewrite_local_attachments(source: str) -> str:
-    """Route absolute Messages attachment paths through the local web server."""
-    attr_re = re.compile(r'(?P<attr>src|href)=(?P<quote>["\'])(?P<path>/Users/[^"\']+/Library/Messages/Attachments/[^"\']+)(?P=quote)', re.I)
+def resolve_archive_file(archive_dir: Path, raw_path: str) -> Path | None:
+    """Resolve a relative export path without allowing access outside the archive."""
+    parsed = urlparse(html.unescape(raw_path))
+    if parsed.scheme or parsed.netloc or not parsed.path or parsed.path.startswith("/"):
+        return None
+    try:
+        archive_root = archive_dir.resolve(strict=True)
+        path = (archive_root / unquote(parsed.path)).resolve(strict=True)
+        path.relative_to(archive_root)
+    except (OSError, ValueError):
+        return None
+    return path if path.is_file() else None
+
+
+def rewrite_local_attachments(source: str, archive_dir: Path) -> str:
+    """Route original and copied attachments through the local web server."""
+    attr_re = re.compile(
+        r'(?P<attr>src|href)=(?P<quote>["\'])(?P<url>[^"\']+)(?P=quote)', re.I
+    )
 
     def replace(match):
-        path = html.unescape(match.group("path"))
-        url = "/attachment?path=" + quote(path, safe="")
+        raw_url = html.unescape(match.group("url"))
+        parsed = urlparse(raw_url)
+        if parsed.path.startswith("/Users/") and "/Library/Messages/Attachments/" in parsed.path:
+            url = "/attachment?path=" + quote(unquote(parsed.path), safe="")
+        else:
+            path = resolve_archive_file(archive_dir, raw_url)
+            if path is None:
+                return match.group(0)
+            relative = path.relative_to(archive_dir.resolve()).as_posix()
+            url = "/archive-file?path=" + quote(relative, safe="")
+        if parsed.fragment:
+            url += "#" + quote(unquote(parsed.fragment), safe="")
         return f'{match.group("attr")}={match.group("quote")}{url}{match.group("quote")}'
 
     return attr_re.sub(replace, source)
@@ -296,6 +322,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.serve_chat(params)
         if parsed.path == "/attachment":
             return self.serve_attachment(params)
+        if parsed.path == "/archive-file":
+            return self.serve_archive_file(params)
         if parsed.path == "/" or parsed.path == "/index.html":
             return self.serve_file(APP_DIR / "index.html", "text/html; charset=utf-8")
         if parsed.path in ("/app.css", "/app.js"):
@@ -363,6 +391,33 @@ class Handler(SimpleHTTPRequestHandler):
         finally:
             file.close()
 
+    def serve_archive_file(self, params):
+        archive_dir = INDEX.archive_dir
+        if archive_dir is None:
+            return self.send_error(409, "Choose an archive first")
+        path = resolve_archive_file(archive_dir, params.get("path", [""])[0])
+        if path is None:
+            return self.send_error(404, "Archive file not found")
+        return self.serve_downloadable_file(path)
+
+    def serve_downloadable_file(self, path: Path):
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        try:
+            file = path.open("rb")
+            size = path.stat().st_size
+        except OSError:
+            return self.send_error(404, "File not found")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{quote(path.name)}")
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.end_headers()
+        try:
+            self.copyfile(file, self.wfile)
+        finally:
+            file.close()
+
     def serve_chat(self, params):
         archive_dir = INDEX.archive_dir
         if archive_dir is None:
@@ -375,21 +430,22 @@ class Handler(SimpleHTTPRequestHandler):
             source = candidate.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return self.send_error(404)
-        source = rewrite_local_attachments(source)
+        source = rewrite_local_attachments(source, archive_dir)
         selected = params.get("message", [""])[0]
         title = html.escape(candidate.stem)
         injected_css = """
 <style id="chat-view-style">
 html{height:100%;scroll-behavior:smooth;overflow-y:auto!important}body{min-height:100%;max-width:820px;margin:0 auto;padding:88px 20px 40px!important;background:#fff!important;overflow:visible!important}
 .message{margin:7px 0!important}.message .sent,.message .received{padding:9px 14px!important;max-width:72%!important;border-radius:20px!important}
-.timestamp{font-size:11px!important;opacity:.62}.sender{font-size:12px!important;font-weight:600}.attachment img,.attachment video{max-width:100%;border-radius:14px}
+.timestamp{font-size:11px!important;opacity:.62}.sender{font-size:12px!important;font-weight:600}.message .sent:has(.attachment),.message .received:has(.attachment){max-width:88%!important}.attachment img,.attachment video{display:block;width:auto;max-width:100%;max-height:72vh;border-radius:14px;object-fit:contain;cursor:zoom-in}
 .search-hit>div{outline:4px solid rgba(255,196,0,.55);outline-offset:3px}
 #archive-title{position:fixed;z-index:20;top:0;left:0;right:0;height:64px;background:rgba(248,248,248,.88);backdrop-filter:blur(18px);border-bottom:1px solid #ddd;display:flex;align-items:center;justify-content:center;font:600 15px system-ui;color:#111}
 @media(prefers-color-scheme:dark){body{background:#000!important}#archive-title{background:rgba(28,28,30,.88);border-color:#333;color:#fff}}
 </style><div id="archive-title">__CHAT_TITLE__</div>
 <script>
 addEventListener('DOMContentLoaded',()=>document.querySelectorAll('.attachment img').forEach(img=>{
-  if(!img.closest('a')){const a=document.createElement('a');a.href=img.src;a.target='_blank';a.title='Open attachment';img.replaceWith(a);a.appendChild(img)}
+  img.loading='lazy';img.decoding='async';
+  if(!img.closest('a')){const a=document.createElement('a');a.href=img.src;a.target='_blank';a.rel='noopener';a.title='Open full-size attachment';img.replaceWith(a);a.appendChild(img)}
 }))
 </script>
 """.replace("__CHAT_TITLE__", title)

@@ -51,6 +51,8 @@ to the macOS CPU architecture on which they are created.
 - Command-K focuses search and Escape clears it.
 - The search index is rebuilt in memory after selecting an archive.
 - The selected archive remains read-only.
+- Attachments copied into an archive with the `clone`, `basic`, or `full`
+  method are displayed and downloadable from inside the selected archive.
 - Linked web previews may contact their original websites when displayed.
 - Attachments exported as absolute paths require the original files to remain
   under `~/Library/Messages/Attachments`.
