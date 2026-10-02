@@ -1,27 +1,61 @@
 # Chat View
 
-A private, local browser for this `imessage-exporter` HTML archive. It adds an iMessage-like conversation list and full-archive search without modifying the exported files or sending data anywhere.
+Chat View is a private, local browser for HTML archives created by
+[`imessage-exporter`](https://github.com/ReagentX/imessage-exporter). It provides
+an iMessage-style conversation list and full-archive search without modifying
+the exported files or uploading messages anywhere.
 
-## Start
+## Use the macOS app
 
-Double-click `Start Chat View.command`, or run:
+1. Double-click the `Chat View` executable.
+2. Your browser opens the Chat View welcome screen.
+3. Click **Choose archive folder…** and select the folder containing the
+   exported conversation `.html` files.
+4. After confirming the Finder dialog, the chat interface opens in the same
+   browser tab.
+
+Keep the Terminal window opened by the executable running while using Chat
+View. Press Control-C in that window to stop the local server.
+
+The executable is self-contained; Python and third-party packages are not
+required on the Mac where it is used. Because unsigned local executables can be
+blocked by Gatekeeper, the first launch may require Control-clicking the file,
+choosing **Open**, and confirming the prompt.
+
+## Run from source
+
+Python 3.10 or newer is sufficient; no runtime dependencies are required.
 
 ```sh
-python3 chat-view/server.py
+python3 server.py
 ```
 
-Then open <http://127.0.0.1:8765>. Press Control-C in Terminal to stop it.
+Then click **Choose archive folder…** in the browser. Use `--port NUMBER` to
+select another local port or `--no-open` to prevent automatic browser launch.
 
-Search supports multiple words (all words must occur in the same message). Use Command-K to focus search and Escape to clear it.
+## Build the executable
 
-## Notes
+Install PyInstaller into your preferred development environment, then run:
 
-- The search index is rebuilt in memory on startup; the archive remains read-only.
+```sh
+python3 -m pip install pyinstaller
+./build.sh
+```
+
+The single-file executable is written to `dist/Chat View`. Builds are specific
+to the macOS CPU architecture on which they are created.
+
+## Usage notes
+
+- Search supports multiple words; all words must occur in the same message.
+- Command-K focuses search and Escape clears it.
+- The search index is rebuilt in memory after selecting an archive.
+- The selected archive remains read-only.
 - Linked web previews may contact their original websites when displayed.
-- Attachments exported as absolute paths require the original attachment files to remain at those paths.
+- Attachments exported as absolute paths require the original files to remain
+  under `~/Library/Messages/Attachments`.
 
-## Update the archive
+## Privacy
 
-Double-click `Update Archive.command`. It safely exports into a staging directory first, then replaces only the top-level conversation HTML files. The `chat-view` interface is left intact.
-
-If Chat View is running, its search index is refreshed automatically. Otherwise, start it normally after the update. macOS may require Full Disk Access for Terminal so `imessage-exporter` can read `~/Library/Messages/chat.db`.
+Chat View listens only on `127.0.0.1`, so it is accessible from the local Mac.
+Messages and the in-memory search index are not sent to a remote service.

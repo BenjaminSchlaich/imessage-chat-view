@@ -7,7 +7,17 @@
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-  <main class="shell">
+  <main id="setup" class="setup">
+    <div class="setup-card">
+      <div class="bubble-icon">•••</div>
+      <h1>Chat View</h1>
+      <p>Choose an <code>imessage-exporter</code> HTML archive to browse it privately on this Mac.</p>
+      <button id="choose-archive" class="primary">Choose archive folder…</button>
+      <p id="setup-status" class="setup-status" role="status"></p>
+      <small>Your archive stays on your computer.</small>
+    </div>
+  </main>
+  <main id="chat" class="shell" hidden>
     <aside class="sidebar">
       <header><h1>Messages</h1><button id="theme" aria-label="Toggle appearance">◐</button></header>
       <label class="search"><span>⌕</span><input id="search" type="search" placeholder="Search" autocomplete="off"><kbd>⌘K</kbd></label>

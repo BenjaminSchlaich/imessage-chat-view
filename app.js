@@ -1,4 +1,8 @@
 const list = document.querySelector('#list');
+const setup = document.querySelector('#setup');
+const chat = document.querySelector('#chat');
+const chooseArchive = document.querySelector('#choose-archive');
+const setupStatus = document.querySelector('#setup-status');
 const search = document.querySelector('#search');
 const status = document.querySelector('#status');
 const frame = document.querySelector('#frame');
@@ -25,6 +29,42 @@ async function loadChats() {
   if (!data.ready) return setTimeout(loadChats, 350);
   chats = data.chats; renderChats();
 }
+
+function showChat(archive) {
+  setup.hidden = true;
+  chat.hidden = false;
+  document.title = archive ? `${archive} — Chat View` : 'Chat View';
+  status.textContent = 'Indexing your archive…';
+  loadChats();
+}
+
+async function initialize() {
+  try {
+    const state = await fetch('/api/state').then(r => r.json());
+    if (state.selected) showChat(state.archive);
+  } catch {
+    setupStatus.textContent = 'Could not connect to Chat View. Please reopen the app.';
+  }
+}
+
+chooseArchive.addEventListener('click', async () => {
+  chooseArchive.disabled = true;
+  setupStatus.textContent = 'Waiting for your folder selection…';
+  try {
+    const response = await fetch('/api/select-archive', {method: 'POST'});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'The archive could not be opened.');
+    if (data.cancelled) {
+      setupStatus.textContent = 'No folder selected.';
+    } else {
+      showChat(data.archive);
+    }
+  } catch (error) {
+    setupStatus.textContent = error.message;
+  } finally {
+    chooseArchive.disabled = false;
+  }
+});
 async function runSearch() {
   const q = search.value.trim();
   if (!q) return renderChats();
@@ -39,4 +79,4 @@ search.addEventListener('input', () => { clearTimeout(timer); timer=setTimeout(r
 document.addEventListener('keydown', e => { if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();search.focus();} if(e.key==='Escape'){search.value='';search.blur();renderChats();} });
 document.querySelector('#theme').onclick=()=>document.body.classList.toggle('dark');
 document.querySelector('.viewer').addEventListener('click', e=>{if(innerWidth<=680 && e.clientY<65) shell.classList.remove('chat-open')});
-loadChats();
+initialize();

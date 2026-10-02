@@ -7,8 +7,9 @@ import argparse
 import html
 import json
 import mimetypes
-import os
 import re
+import subprocess
+import sys
 import threading
 import webbrowser
 from dataclasses import dataclass
@@ -19,8 +20,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from html.parser import HTMLParser
 
 
-APP_DIR = Path(__file__).resolve().parent
-ARCHIVE_DIR = APP_DIR.parent
+APP_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 BODY_END_RE = re.compile(r'</body\s*>', re.I)
 DIV_TAG_RE = re.compile(r'<div\b[^>]*>|</div\s*>', re.I)
 MESSAGE_CLASS_RE = re.compile(r'class\s*=\s*["\'][^"\']*\bmessage\b[^"\']*["\']', re.I)
@@ -105,20 +105,28 @@ class ArchiveParser(HTMLParser):
 class Index:
     def __init__(self):
         self.lock = threading.Lock()
+        self.archive_dir: Path | None = None
         self.ready = False
         self.building = False
         self.chats: list[dict] = []
         self.messages: list[Message] = []
+        self.generation = 0
 
-    def build(self):
+    def select_archive(self, archive_dir: Path):
         with self.lock:
-            if self.building:
-                return
+            self.archive_dir = archive_dir
+            self.generation += 1
+            generation = self.generation
             self.building = True
             self.ready = False
+            self.chats = []
+            self.messages = []
+        threading.Thread(target=self.build, args=(archive_dir, generation), daemon=True).start()
+
+    def build(self, archive_dir: Path, generation: int):
         chats = []
         messages = []
-        for path in sorted(ARCHIVE_DIR.glob("*.html"), key=lambda p: p.name.casefold()):
+        for path in sorted(archive_dir.glob("*.html"), key=lambda p: p.name.casefold()):
             try:
                 source = path.read_text(encoding="utf-8", errors="replace")
                 parser = ArchiveParser(path.stem, path.name)
@@ -137,14 +145,21 @@ class Index:
                 continue
         chats.sort(key=lambda x: date_key(x["last"]), reverse=True)
         with self.lock:
+            if generation != self.generation:
+                return
             self.chats, self.messages = chats, messages
             self.ready, self.building = True, False
 
     def rebuild_async(self):
         with self.lock:
-            if self.building:
+            if self.building or self.archive_dir is None:
                 return False
-        threading.Thread(target=self.build, daemon=True).start()
+            archive_dir = self.archive_dir
+            self.generation += 1
+            generation = self.generation
+            self.building = True
+            self.ready = False
+        threading.Thread(target=self.build, args=(archive_dir, generation), daemon=True).start()
         return True
 
     def search(self, query: str, limit=150):
@@ -210,6 +225,22 @@ INDEX = Index()
 ATTACHMENT_ROOT = (Path.home() / "Library" / "Messages" / "Attachments").resolve()
 
 
+def choose_archive_folder() -> Path | None:
+    """Open the native macOS folder chooser and return the selected folder."""
+    script = 'POSIX path of (choose folder with prompt "Choose your iMessage HTML archive")'
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, check=False
+        )
+    except OSError as error:
+        raise RuntimeError("The macOS folder picker could not be opened.") from error
+    if result.returncode != 0:
+        if "User canceled" in result.stderr:
+            return None
+        raise RuntimeError(result.stderr.strip() or "The folder picker failed.")
+    return Path(result.stdout.strip()).expanduser().resolve()
+
+
 def rewrite_local_attachments(source: str) -> str:
     """Route absolute Messages attachment paths through the local web server."""
     attr_re = re.compile(r'(?P<attr>src|href)=(?P<quote>["\'])(?P<path>/Users/[^"\']+/Library/Messages/Attachments/[^"\']+)(?P=quote)', re.I)
@@ -246,6 +277,13 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
+        if parsed.path == "/api/state":
+            archive = INDEX.archive_dir
+            return self.json_response({
+                "selected": archive is not None,
+                "archive": archive.name if archive else "",
+                "ready": INDEX.ready,
+            })
         if parsed.path == "/api/chats":
             return self.json_response({"ready": INDEX.ready, "chats": INDEX.chats})
         if parsed.path == "/api/search":
@@ -264,6 +302,29 @@ class Handler(SimpleHTTPRequestHandler):
             path = APP_DIR / parsed.path[1:]
             return self.serve_file(path, mimetypes.guess_type(path)[0] or "text/plain")
         self.send_error(404)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/select-archive":
+            return self.send_error(404)
+        expected_origin = f"http://{self.headers.get('Host', '')}"
+        if self.headers.get("Origin") not in (None, expected_origin):
+            return self.json_response({"error": "Invalid request origin."}, status=403)
+        try:
+            archive = choose_archive_folder()
+        except RuntimeError as error:
+            return self.json_response({"error": str(error)}, status=500)
+        if archive is None:
+            return self.json_response({"cancelled": True})
+        if not archive.is_dir():
+            return self.json_response({"error": "The selected folder is not available."}, status=400)
+        html_files = list(archive.glob("*.html"))
+        if not html_files:
+            return self.json_response({
+                "error": "This folder does not contain any top-level HTML conversation files."
+            }, status=422)
+        INDEX.select_archive(archive)
+        return self.json_response({"selected": True, "archive": archive.name})
 
     def serve_file(self, path: Path, content_type: str):
         try:
@@ -303,9 +364,12 @@ class Handler(SimpleHTTPRequestHandler):
             file.close()
 
     def serve_chat(self, params):
+        archive_dir = INDEX.archive_dir
+        if archive_dir is None:
+            return self.send_error(409, "Choose an archive first")
         filename = unquote(params.get("file", [""])[0])
-        candidate = (ARCHIVE_DIR / filename).resolve()
-        if candidate.parent != ARCHIVE_DIR.resolve() or candidate.suffix.lower() != ".html":
+        candidate = (archive_dir / filename).resolve()
+        if candidate.parent != archive_dir or candidate.suffix.lower() != ".html":
             return self.send_error(400, "Invalid conversation")
         try:
             source = candidate.read_text(encoding="utf-8", errors="replace")
@@ -348,7 +412,6 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-open", action="store_true")
     args = parser.parse_args()
-    threading.Thread(target=INDEX.build, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{args.port}"
     print(f"Chat View is running at {url}\nPress Control-C to stop.")
